@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "overleaf-sjtu-cli"
+version = "0.1.0"
+description = "Command line client for SJTU Overleaf"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Hammer" }]
+dependencies = [
+  "beautifulsoup4>=4.12",
+  "keyring>=25.0",
+  "pillow>=10.0",
+  "requests>=2.31",
+  "rich>=13.7",
+  "typer>=0.12",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+overleaf = "overleaf_sjtu.cli:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
