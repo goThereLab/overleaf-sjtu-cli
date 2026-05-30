@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from overleaf_sjtu.client import AuthRequired, JAccountVerificationChallenge, JAccountVerificationRequired, JAccountVerificationResult
 from overleaf_sjtu.cli import _save_captcha_if_needed, app
+from overleaf_sjtu.models import CompileResult
 
 
 runner = CliRunner()
@@ -32,6 +33,72 @@ def test_login_help_exposes_jaccount_mfa_controls() -> None:
     assert "--mfa-code TEXT" in result.output
     assert "--mfa-resend" in result.output
     assert "--trust-mfa / --no-trust-mfa" in result.output
+
+
+def test_compile_run_help_explains_compiler_choice() -> None:
+    result = runner.invoke(app, ["compile", "run", "--help"])
+    normalized = " ".join(result.output.split())
+
+    assert result.exit_code == 0
+    assert "--compiler [latex|lualatex|pdflatex|xelatex]" in result.output
+    assert "overleaf settings compiler [latex|lualatex|pdflatex|xelatex]" in normalized
+
+
+def test_compile_run_prints_and_passes_compiler_override(monkeypatch, tmp_path) -> None:
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, config, store, timeout=60):
+            pass
+
+        def resolve_project(self, project):
+            return "0123456789abcdefabcdefab"
+
+        def get_compiler(self, project):
+            raise AssertionError("explicit compiler should not read current compiler")
+
+        def compile(self, project, **kwargs):
+            seen.update(kwargs)
+            return CompileResult(project_id=project, status="success", pdf_url="/output.pdf")
+
+    monkeypatch.setattr("overleaf_sjtu.cli.OverleafClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        ["compile", "run", "--compiler", "xelatex"],
+        env={"XDG_CONFIG_HOME": str(tmp_path / "config"), "XDG_STATE_HOME": str(tmp_path / "state")},
+    )
+
+    assert result.exit_code == 0
+    assert "0123456789abcdefabcdefab: compiler=xelatex (override)" in result.output
+    assert seen["compiler"] == "xelatex"
+
+
+def test_compile_run_prints_current_compiler(monkeypatch, tmp_path) -> None:
+    class FakeClient:
+        def __init__(self, config, store, timeout=60):
+            pass
+
+        def resolve_project(self, project):
+            return "0123456789abcdefabcdefab"
+
+        def get_compiler(self, project):
+            return "pdflatex"
+
+        def compile(self, project, **kwargs):
+            assert kwargs["compiler"] is None
+            return CompileResult(project_id=project, status="success")
+
+    monkeypatch.setattr("overleaf_sjtu.cli.OverleafClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        ["compile", "run"],
+        env={"XDG_CONFIG_HOME": str(tmp_path / "config"), "XDG_STATE_HOME": str(tmp_path / "state")},
+    )
+
+    assert result.exit_code == 0
+    assert "0123456789abcdefabcdefab: compiler=pdflatex (setting)" in result.output
 
 
 def test_logout_can_forget_keyring_credentials(monkeypatch) -> None:

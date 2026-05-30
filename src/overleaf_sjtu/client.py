@@ -784,10 +784,13 @@ class OverleafClient:
         draft: bool = False,
         timeout_seconds: int = 120,
         stop_on_first: bool = False,
+        compiler: str | None = None,
     ) -> CompileResult:
         pid = parse_project_id(project)
         csrf = self.get_csrf()
         payload = {"draft": draft, "check": "silent", "stopOnFirstError": stop_on_first}
+        if compiler:
+            payload["compiler"] = compiler
         resp = self._request(
             "post",
             self._url(f"/project/{pid}/compile"),

@@ -109,9 +109,9 @@ overleaf file upload LOCAL_PATH [REMOTE_PATH]
 overleaf file edit REMOTE_PATH [--editor vim|nano]
 overleaf file mkdir REMOTE_PATH
 
-overleaf settings compiler xelatex [--project PROJECT]
+overleaf settings compiler [latex|lualatex|pdflatex|xelatex] [--project PROJECT]
 
-overleaf compile run [PROJECT] [--draft] [--stop-on-first-error] [--wait 120]
+overleaf compile run [PROJECT] [--compiler latex|lualatex|pdflatex|xelatex] [--draft] [--stop-on-first-error] [--wait 120]
 overleaf compile status [PROJECT]
 overleaf compile pdf [PROJECT] -o output.pdf
 overleaf compile log [PROJECT] [--tail 80] [--full] [-o output.log]

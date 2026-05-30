@@ -16,6 +16,29 @@ def test_infer_compiler_from_log(tmp_path: Path) -> None:
     assert client._infer_compiler_from_log("This is pdfTeX, Version ...") == "pdflatex"
 
 
+def test_compile_can_send_temporary_compiler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OverleafClient(Config(), ConfigStore(tmp_path / "config.json"))
+    seen_payloads = []
+
+    monkeypatch.setattr(client, "get_csrf", lambda: "csrf")
+
+    def fake_request(method, url, **kwargs):
+        seen_payloads.append(kwargs.get("json"))
+        resp = requests.Response()
+        resp.status_code = 200
+        resp.url = url
+        resp._content = b'{"status":"success"}'
+        resp.headers["Content-Type"] = "application/json"
+        return resp
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    result = client.compile("0123456789abcdefabcdefab", compiler="xelatex")
+
+    assert result.status == "success"
+    assert seen_payloads == [{"draft": False, "check": "silent", "stopOnFirstError": False, "compiler": "xelatex"}]
+
+
 def test_whoami_counts_the_same_project_list(tmp_path: Path) -> None:
     client = OverleafClient(Config(), ConfigStore(tmp_path / "config.json"))
     client.list_projects = lambda: [

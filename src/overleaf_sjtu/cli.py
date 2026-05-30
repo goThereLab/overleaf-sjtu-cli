@@ -47,6 +47,13 @@ class MfaMethod(str, Enum):
     sms = "sms"
 
 
+class Compiler(str, Enum):
+    latex = "latex"
+    lualatex = "lualatex"
+    pdflatex = "pdflatex"
+    xelatex = "xelatex"
+
+
 class CompactHelpGroup(TyperGroup):
     def _hide_compat_commands(self) -> None:
         # Typer versions differ in whether add_typer(..., hidden=True) is
@@ -1367,10 +1374,31 @@ def compile_run(
     draft: bool = typer.Option(False, "--draft", help="Compile in draft mode."),
     stop_on_first_error: bool = typer.Option(False, "--stop-on-first-error", help="Stop after first LaTeX error."),
     timeout_seconds: int = typer.Option(120, "--wait", min=1, help="Seconds to wait for completion."),
+    compiler: Optional[Compiler] = typer.Option(
+        None,
+        "--compiler",
+        help="Temporarily run with this compiler. Persist the default with `overleaf settings compiler [latex|lualatex|pdflatex|xelatex]`.",
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
-    pid = get_client(ctx).resolve_project(project)
-    result = get_client(ctx).compile(pid, draft=draft, timeout_seconds=timeout_seconds, stop_on_first=stop_on_first_error)
+    client = get_client(ctx)
+    pid = client.resolve_project(project)
+    compiler_value = compiler.value if compiler else None
+    current_compiler = compiler_value or client.get_compiler(pid)
+    if not json_:
+        source = "override" if compiler_value else "setting"
+        if current_compiler:
+            console.print(f"{pid}: compiler={current_compiler} ({source})")
+        else:
+            console.print(f"{pid}: compiler=unknown")
+            console.print("Set one with: overleaf settings compiler [latex|lualatex|pdflatex|xelatex]")
+    result = client.compile(
+        pid,
+        draft=draft,
+        timeout_seconds=timeout_seconds,
+        stop_on_first=stop_on_first_error,
+        compiler=compiler_value,
+    )
     if json_:
         emit_json(result)
     else:
@@ -1437,22 +1465,25 @@ def compile_log(
 @settings_app.command("compiler")
 def settings_compiler(
     ctx: typer.Context,
-    compiler: Optional[str] = typer.Argument(None, help="Set compiler: pdflatex, xelatex, lualatex, or latex."),
+    compiler: Optional[Compiler] = typer.Argument(
+        None,
+        help="Set the persistent project compiler: overleaf settings compiler [latex|lualatex|pdflatex|xelatex].",
+    ),
     project: Optional[str] = typer.Option(None, "--project", "-p", help="Project ID or URL. Defaults to current project."),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Print only the compiler."),
 ) -> None:
-    allowed = {"pdflatex", "xelatex", "lualatex", "latex"}
     pid = get_client(ctx).resolve_project(project)
     if compiler is None:
         current = get_client(ctx).get_compiler(pid)
         if not current:
-            raise typer.BadParameter("compiler is unknown; run `overleaf compile run` or set one with `overleaf settings compiler xelatex`")
+            raise typer.BadParameter(
+                "compiler is unknown; set one with `overleaf settings compiler [latex|lualatex|pdflatex|xelatex]`"
+            )
         console.print(current if quiet else f"{pid}: compiler={current}")
         return
-    if compiler not in allowed:
-        raise typer.BadParameter(f"compiler must be one of: {', '.join(sorted(allowed))}")
-    get_client(ctx).set_compiler(pid, compiler)
-    console.print(f"{pid}: compiler={compiler}")
+    compiler_value = compiler.value
+    get_client(ctx).set_compiler(pid, compiler_value)
+    console.print(f"{pid}: compiler={compiler_value}")
 
 
 def run() -> None:
