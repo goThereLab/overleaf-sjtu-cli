@@ -846,9 +846,13 @@ def _zsh_completion_script() -> str:
     root_command = typer.main.get_command(app)
     # Typer keeps the pre-Click-8 completion instruction order internally
     # (`complete_zsh`), while Click's zsh template emits `zsh_complete`.
-    return ZshComplete(root_command, {}, "overleaf", "_OVERLEAF_COMPLETE").source().replace(
+    script = ZshComplete(root_command, {}, "overleaf", "_OVERLEAF_COMPLETE").source().replace(
         "_OVERLEAF_COMPLETE=zsh_complete",
         "_OVERLEAF_COMPLETE=complete_zsh",
+    ).lstrip()
+    return script.replace("_overleaf_completion()", "_overleaf()", 1).replace(
+        "compdef _overleaf_completion overleaf",
+        "compdef _overleaf overleaf",
     )
 
 

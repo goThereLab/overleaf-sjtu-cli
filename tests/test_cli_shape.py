@@ -351,7 +351,9 @@ def test_completion_commands_generate_zsh_script(tmp_path) -> None:
     show = runner.invoke(app, ["completion", "show", "zsh"])
 
     assert show.exit_code == 0
+    assert show.output.startswith("#compdef overleaf\n")
     assert "#compdef overleaf" in show.output
+    assert "_overleaf()" in show.output
     assert "_OVERLEAF_COMPLETE=complete_zsh overleaf" in show.output
 
     completion_dir = tmp_path / "zsh-completions"
@@ -360,7 +362,9 @@ def test_completion_commands_generate_zsh_script(tmp_path) -> None:
     assert install.exit_code == 0
     installed = completion_dir / "_overleaf"
     assert installed.exists()
-    assert "#compdef overleaf" in installed.read_text()
+    installed_text = installed.read_text()
+    assert installed_text.startswith("#compdef overleaf\n")
+    assert "_overleaf()" in installed_text
 
 
 def test_completion_commands_generate_bash_script(tmp_path) -> None:
