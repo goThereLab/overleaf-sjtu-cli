@@ -101,6 +101,7 @@ _TYPER_KWARGS = {
 
 app = typer.Typer(help="SJTU Overleaf command line client.", **_TYPER_KWARGS)
 auth_app = typer.Typer(help="Authentication commands.", **_TYPER_KWARGS)
+auth_flow_app = typer.Typer(help="Explicit multi-step login flow commands for agents and scripts.", **_TYPER_KWARGS)
 project_app = typer.Typer(help="Manage projects.", **_TYPER_KWARGS)
 compile_app = typer.Typer(help="Compile LaTeX projects and fetch outputs.", **_TYPER_KWARGS)
 settings_app = typer.Typer(help="Change project settings.", **_TYPER_KWARGS)
@@ -115,6 +116,7 @@ file_app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 app.add_typer(auth_app, name="auth")
+auth_app.add_typer(auth_flow_app, name="flow")
 app.add_typer(project_app, name="project")
 app.add_typer(compile_app, name="compile")
 app.add_typer(settings_app, name="settings")
@@ -367,9 +369,8 @@ def _save_pending_login_state(
     login_state: dict,
     captcha_path: Optional[Path],
     mfa_method: str | None = None,
+    flow_path: Optional[Path] = None,
 ) -> None:
-    path = store.login_state_path
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "created_at": int(time.time()),
         "captcha_path": str(captcha_path) if captcha_path else None,
@@ -377,8 +378,7 @@ def _save_pending_login_state(
     }
     if mfa_method:
         payload["mfa_method"] = mfa_method
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    path.chmod(0o600)
+    _write_flow_payload(flow_path or store.login_state_path, payload)
 
 
 def _save_pending_mfa_state(
@@ -387,9 +387,8 @@ def _save_pending_mfa_state(
     challenge,
     method: str | None,
     client: OverleafClient,
+    flow_path: Optional[Path] = None,
 ) -> None:
-    path = store.login_state_path
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "created_at": int(time.time()),
         "mfa_state": {
@@ -402,26 +401,37 @@ def _save_pending_mfa_state(
     }
     if method:
         payload["mfa_state"]["method"] = method
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    path.chmod(0o600)
+    _write_flow_payload(flow_path or store.login_state_path, payload)
 
 
-def _refresh_pending_mfa_state(store: ConfigStore, state: dict, client: OverleafClient) -> None:
-    path = store.login_state_path
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _refresh_pending_mfa_state(store: ConfigStore, state: dict, client: OverleafClient, flow_path: Optional[Path] = None) -> None:
     refreshed = dict(state)
     refreshed["cookies"] = _cookie_list(client.session.cookies)
     payload = {"created_at": int(time.time()), "mfa_state": refreshed}
+    _write_flow_payload(flow_path or store.login_state_path, payload)
+
+
+def _write_flow_payload(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     path.chmod(0o600)
 
 
-def _load_pending_mfa_state(store: ConfigStore) -> Optional[dict]:
-    payload = _load_pending_payload(store)
+def _flow_path(store: ConfigStore, flow: Optional[Path]) -> Path:
+    return flow or store.login_flow_path
+
+
+def _clear_flow_path(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
+def _load_pending_mfa_state(store: ConfigStore, flow_path: Optional[Path] = None) -> Optional[dict]:
+    payload = _load_pending_payload(store, flow_path)
     if payload is None:
         return None
     if int(time.time()) - int(payload.get("created_at") or 0) > 600:
-        store.clear_login_state()
+        _clear_flow_path(flow_path or store.login_state_path)
         return None
     return payload.get("mfa_state")
 
@@ -485,26 +495,26 @@ def _prompt_mfa_method(methods: list[str]) -> str:
         typer.echo(f"Choose one of: {', '.join(available)}")
 
 
-def _load_pending_login_state(store: ConfigStore) -> Optional[dict]:
-    payload = _load_pending_login_payload(store)
+def _load_pending_login_state(store: ConfigStore, flow_path: Optional[Path] = None) -> Optional[dict]:
+    payload = _load_pending_login_payload(store, flow_path)
     if payload is None:
         return None
     state = payload.get("login_state")
     return state if isinstance(state, dict) else None
 
 
-def _load_pending_login_payload(store: ConfigStore) -> Optional[dict]:
-    payload = _load_pending_payload(store)
+def _load_pending_login_payload(store: ConfigStore, flow_path: Optional[Path] = None) -> Optional[dict]:
+    payload = _load_pending_payload(store, flow_path)
     if payload is None:
         return None
     if int(time.time()) - int(payload.get("created_at") or 0) > 600:
-        store.clear_login_state()
+        _clear_flow_path(flow_path or store.login_state_path)
         return None
     return payload if isinstance(payload.get("login_state"), dict) else None
 
 
-def _load_pending_payload(store: ConfigStore) -> Optional[dict]:
-    path = store.login_state_path
+def _load_pending_payload(store: ConfigStore, flow_path: Optional[Path] = None) -> Optional[dict]:
+    path = flow_path or store.login_state_path
     if not path.exists():
         return None
     try:
@@ -514,20 +524,22 @@ def _load_pending_payload(store: ConfigStore) -> Optional[dict]:
     return payload if isinstance(payload, dict) else None
 
 
-def _pending_status(store: ConfigStore) -> dict:
-    payload = _load_pending_payload(store)
+def _pending_status(store: ConfigStore, flow_path: Optional[Path] = None) -> dict:
+    path = flow_path or (store.login_flow_path if store.login_flow_path.exists() else store.login_state_path)
+    payload = _load_pending_payload(store, path)
     if payload is None:
-        return {"pending": False}
+        return {"pending": False, "flow": str(path)}
     created_at = int(payload.get("created_at") or 0)
     age_seconds = max(0, int(time.time()) - created_at)
     remaining_seconds = 600 - age_seconds
     if remaining_seconds <= 0:
-        store.clear_login_state()
-        return {"pending": False, "expired": True}
+        _clear_flow_path(path)
+        return {"pending": False, "expired": True, "flow": str(path)}
     mfa_state = payload.get("mfa_state")
     if isinstance(mfa_state, dict):
         return {
             "pending": True,
+            "flow": str(path),
             "type": "mfa",
             "method": mfa_state.get("method"),
             "methods": mfa_state.get("methods") or [],
@@ -539,6 +551,7 @@ def _pending_status(store: ConfigStore) -> dict:
     if isinstance(login_state, dict):
         return {
             "pending": True,
+            "flow": str(path),
             "type": "captcha",
             "captcha_path": payload.get("captcha_path"),
             "mfa_method": payload.get("mfa_method"),
@@ -546,6 +559,41 @@ def _pending_status(store: ConfigStore) -> dict:
             "remaining_seconds": remaining_seconds,
         }
     return {"pending": False}
+
+
+def _flow_submit_password_hint(path: Path, needs_captcha: bool = True) -> str:
+    command = f"overleaf auth flow submit-password --flow {shlex.quote(str(path))} --username USERNAME --password PASSWORD"
+    if needs_captcha:
+        command += " --captcha CAPTCHA"
+    return command
+
+
+def _print_pending_flow_status(status: dict, flow_arg: Path) -> None:
+    if status.get("type") == "mfa":
+        methods = ", ".join(status.get("methods") or [])
+        method = status.get("method")
+        typer.echo(f"Pending jAccount additional verification: method={method or 'not selected'}")
+        typer.echo(f"flow: {flow_arg}")
+        if methods:
+            typer.echo(f"available methods: {methods}")
+        if status.get("account"):
+            typer.echo(f"account: {status['account']}")
+        typer.echo(f"expires in: {status['remaining_seconds']} seconds")
+        typer.echo("Next:")
+        if method:
+            typer.echo(f"  overleaf auth flow mfa-submit --flow {shlex.quote(str(flow_arg))} --code CODE")
+            typer.echo(f"  overleaf auth flow resend --flow {shlex.quote(str(flow_arg))}")
+        else:
+            typer.echo(f"  overleaf auth flow mfa-request --flow {shlex.quote(str(flow_arg))} --method METHOD")
+        return
+    if status.get("type") == "captcha":
+        typer.echo("Pending jAccount password flow")
+        typer.echo(f"flow: {flow_arg}")
+        if status.get("captcha_path"):
+            typer.echo(f"captcha: {status['captcha_path']}")
+        typer.echo(f"expires in: {status['remaining_seconds']} seconds")
+        typer.echo("Next:")
+        typer.echo(f"  {_flow_submit_password_hint(flow_arg, needs_captcha=bool(status.get('captcha_path')))}")
 
 
 def _prompt_remember_credentials() -> bool:
@@ -596,6 +644,61 @@ def whoami(ctx: typer.Context, json_: bool = typer.Option(False, "--json", help=
         console.print(f"Authenticated at {info['base_url']} ({info['project_count_visible']} visible projects)")
 
 
+@auth_app.command("status")
+def auth_status(
+    ctx: typer.Context,
+    check: bool = typer.Option(False, "--check", help="Verify the saved session against the server."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show saved session and pending login-flow state."""
+    store = get_store(ctx)
+    client = get_client(ctx)
+    pending = _pending_status(store)
+    data = {
+        "session_present": has_any_cookie(client.session.cookies),
+        "session_valid": None,
+        "authenticated": None,
+        "cookie_path": str(store.cookie_path),
+        "flow_path": str(store.login_flow_path),
+        "pending": bool(pending.get("pending")),
+        "pending_type": pending.get("type"),
+        "pending_flow": pending.get("flow"),
+    }
+    if check:
+        try:
+            info = client.whoami()
+        except (AuthRequired, OverleafError):
+            data["session_valid"] = False
+            data["authenticated"] = False
+        else:
+            data.update(
+                {
+                    "session_valid": True,
+                    "authenticated": True,
+                    "base_url": info["base_url"],
+                    "project_count_visible": info["project_count_visible"],
+                }
+            )
+    if json_:
+        emit_json(data)
+        return
+    console.print(f"session: {'present' if data['session_present'] else 'missing'}")
+    if check:
+        console.print(f"session_valid: {data['session_valid']}")
+        if data.get("project_count_visible") is not None:
+            console.print(f"projects: {data['project_count_visible']}")
+    console.print(f"cookie_file: {data['cookie_path']}")
+    if data["pending"]:
+        console.print(f"pending_flow: {data['pending_type']} ({data['pending_flow']})")
+    else:
+        console.print("pending_flow: none")
+    console.print("Next:")
+    if not check:
+        console.print("  overleaf auth status --check")
+    if not data["session_present"] or data.get("session_valid") is False:
+        console.print("  overleaf auth login")
+
+
 @auth_app.command("pending")
 def auth_pending(ctx: typer.Context, json_: bool = typer.Option(False, "--json", help="Emit JSON.")) -> None:
     """Show pending jAccount CAPTCHA or additional verification state."""
@@ -634,6 +737,240 @@ def auth_pending(ctx: typer.Context, json_: bool = typer.Option(False, "--json",
         next_cmd += " --no-remember"
         typer.echo(f"  {next_cmd}")
         return
+
+
+@auth_flow_app.command("status")
+def auth_flow_status(
+    ctx: typer.Context,
+    flow: Optional[Path] = typer.Option(None, "--flow", help="Explicit login flow state file."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show an explicit login flow state."""
+    path = _flow_path(get_store(ctx), flow)
+    status = _pending_status(get_store(ctx), path)
+    if json_:
+        emit_json(status)
+        return
+    if not status.get("pending"):
+        typer.echo(f"No pending jAccount login flow: {path}")
+        return
+    _print_pending_flow_status(status, flow_arg=path)
+
+
+@auth_flow_app.command("start")
+def auth_flow_start(
+    ctx: typer.Context,
+    flow: Optional[Path] = typer.Option(None, "--flow", help="Explicit login flow state file."),
+    captcha_output: Optional[Path] = typer.Option(None, "--captcha-output", help="Save captcha image to this path."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Start a jAccount login flow and save its state."""
+    store = get_store(ctx)
+    client = get_client(ctx)
+    path = _flow_path(store, flow)
+    login_state = client.begin_jaccount_login()
+    captcha_path = None
+    if login_state["requires_captcha"]:
+        captcha_path = _save_captcha_if_needed(client.get_login_captcha(login_state), captcha_output, has_tty=False)
+    _save_pending_login_state(store, login_state, captcha_path, flow_path=path)
+    state = "captcha_required" if captcha_path else "password_required"
+    data = {
+        "flow": str(path),
+        "state": state,
+        "captcha_path": str(captcha_path) if captcha_path else None,
+        "next": [_flow_submit_password_hint(path, needs_captcha=bool(captcha_path))],
+    }
+    if json_:
+        emit_json(data)
+        return
+    typer.echo(f"Started jAccount login flow: {path}")
+    if captcha_path:
+        typer.echo(f"Captcha saved: {captcha_path}")
+        typer.echo("Next:")
+        typer.echo("  read the captcha image")
+    else:
+        typer.echo("Next:")
+    typer.echo(f"  {data['next'][0]}")
+
+
+@auth_flow_app.command("submit-password")
+def auth_flow_submit_password(
+    ctx: typer.Context,
+    username: str = typer.Option(..., "--username", "-u", envvar="OVERLEAF_USERNAME", help="jAccount username."),
+    password: str = typer.Option(..., "--password", envvar="OVERLEAF_PASSWORD", help="jAccount password."),
+    captcha: Optional[str] = typer.Option(None, "--captcha", help="jAccount captcha code."),
+    flow: Optional[Path] = typer.Option(None, "--flow", help="Explicit login flow state file."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Submit username, password, and optional CAPTCHA for a saved login flow."""
+    store = get_store(ctx)
+    client = get_client(ctx)
+    path = _flow_path(store, flow)
+    payload = _load_pending_login_payload(store, path)
+    if payload is None:
+        raise AuthRequired(f"pending jAccount password flow not found or expired: {path}")
+    if payload.get("captcha_path") and not captcha:
+        raise AuthRequired(f"captcha is required; read {payload['captcha_path']} and pass --captcha CAPTCHA")
+    try:
+        info = client.login_with_jaccount(username=username, password=password, captcha=captcha, login_state=payload["login_state"])
+    except JAccountVerificationRequired as exc:
+        _save_pending_mfa_state(store, exc.response, exc.challenge, None, client, flow_path=path)
+        data = {
+            "flow": str(path),
+            "state": "mfa_required",
+            "methods": exc.challenge.methods,
+            "account": exc.challenge.account,
+            "next": [f"overleaf auth flow mfa-request --flow {shlex.quote(str(path))} --method METHOD"],
+        }
+        if json_:
+            emit_json(data)
+            return
+        typer.echo("jAccount additional verification required")
+        typer.echo(f"available methods: {', '.join(exc.challenge.methods)}")
+        typer.echo("Next:")
+        typer.echo(f"  {data['next'][0]}")
+        return
+    _clear_flow_path(path)
+    data = {"flow": str(path), "state": "authenticated", "project_count_visible": info["project_count_visible"]}
+    if json_:
+        emit_json(data)
+    else:
+        console.print(f"Logged in: {info['project_count_visible']} visible projects")
+
+
+@auth_flow_app.command("mfa-request")
+def auth_flow_mfa_request(
+    ctx: typer.Context,
+    method: MfaMethod = typer.Option(..., "--method", help="Verification method: app, email, or sms."),
+    flow: Optional[Path] = typer.Option(None, "--flow", help="Explicit login flow state file."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Request an MFA code for a saved login flow."""
+    store = get_store(ctx)
+    client = get_client(ctx)
+    path = _flow_path(store, flow)
+    state = _load_pending_mfa_state(store, path)
+    if state is None:
+        raise AuthRequired(f"pending jAccount MFA flow not found or expired: {path}")
+    method_value = method.value
+    methods = state.get("methods") or []
+    if method_value not in methods:
+        raise AuthRequired(f"jAccount verification method {method_value} is not available; choose one of: {', '.join(methods)}")
+    _restore_cookie_list(client, state.get("cookies") or [])
+    response = _response_from_pending_mfa(state)
+    sent = client.request_jaccount_verification(response, method_value)
+    selected = dict(state)
+    selected["method"] = method_value
+    _refresh_pending_mfa_state(store, selected, client, flow_path=path)
+    data = {
+        "flow": str(path),
+        "state": "mfa_code_requested" if sent.success else "mfa_request_failed",
+        "method": method_value,
+        "message": sent.message,
+        "retry_seconds": sent.retry_seconds,
+        "next": [f"overleaf auth flow mfa-submit --flow {shlex.quote(str(path))} --code CODE"],
+    }
+    if json_:
+        emit_json(data)
+        return
+    typer.echo(sent.message)
+    if sent.retry_seconds:
+        typer.echo(f"Resend available in {sent.retry_seconds} seconds")
+    if not sent.success:
+        raise AuthRequired(sent.message)
+    typer.echo("Next:")
+    typer.echo(f"  {data['next'][0]}")
+
+
+@auth_flow_app.command("mfa-submit")
+def auth_flow_mfa_submit(
+    ctx: typer.Context,
+    code: str = typer.Option(..., "--code", help="Verification code."),
+    flow: Optional[Path] = typer.Option(None, "--flow", help="Explicit login flow state file."),
+    trust_mfa: bool = typer.Option(True, "--trust-mfa/--no-trust-mfa", help="Trust this device when submitting additional verification."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Submit an MFA code and finish a saved login flow."""
+    store = get_store(ctx)
+    client = get_client(ctx)
+    path = _flow_path(store, flow)
+    state = _load_pending_mfa_state(store, path)
+    if state is None:
+        raise AuthRequired(f"pending jAccount MFA flow not found or expired: {path}")
+    method = state.get("method")
+    if not method:
+        raise AuthRequired(f"pending jAccount MFA flow has no selected method; run `overleaf auth flow mfa-request --flow {path} --method METHOD`")
+    _restore_cookie_list(client, state.get("cookies") or [])
+    info = client.complete_jaccount_verification(
+        _response_from_pending_mfa(state),
+        method,
+        code,
+        trust=trust_mfa,
+        request_code=False,
+        account=state.get("account"),
+    )
+    _clear_flow_path(path)
+    data = {"flow": str(path), "state": "authenticated", "project_count_visible": info["project_count_visible"]}
+    if json_:
+        emit_json(data)
+    else:
+        console.print(f"Logged in: {info['project_count_visible']} visible projects")
+
+
+@auth_flow_app.command("resend")
+def auth_flow_resend(
+    ctx: typer.Context,
+    flow: Optional[Path] = typer.Option(None, "--flow", help="Explicit login flow state file."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Resend the MFA code for a saved login flow."""
+    store = get_store(ctx)
+    client = get_client(ctx)
+    path = _flow_path(store, flow)
+    state = _load_pending_mfa_state(store, path)
+    if state is None:
+        raise AuthRequired(f"pending jAccount MFA flow not found or expired: {path}")
+    method = state.get("method")
+    if not method:
+        raise AuthRequired(f"pending jAccount MFA flow has no selected method; run `overleaf auth flow mfa-request --flow {path} --method METHOD`")
+    _restore_cookie_list(client, state.get("cookies") or [])
+    sent = client.request_jaccount_verification(_response_from_pending_mfa(state), method)
+    _refresh_pending_mfa_state(store, state, client, flow_path=path)
+    data = {
+        "flow": str(path),
+        "state": "mfa_code_requested" if sent.success else "mfa_request_failed",
+        "method": method,
+        "message": sent.message,
+        "retry_seconds": sent.retry_seconds,
+        "next": [f"overleaf auth flow mfa-submit --flow {shlex.quote(str(path))} --code CODE"],
+    }
+    if json_:
+        emit_json(data)
+        return
+    typer.echo(sent.message)
+    if sent.retry_seconds:
+        typer.echo(f"Resend available in {sent.retry_seconds} seconds")
+    if not sent.success:
+        raise AuthRequired(sent.message)
+    typer.echo("Next:")
+    typer.echo(f"  {data['next'][0]}")
+
+
+@auth_flow_app.command("cancel")
+def auth_flow_cancel(
+    ctx: typer.Context,
+    flow: Optional[Path] = typer.Option(None, "--flow", help="Explicit login flow state file."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Cancel and remove a saved login flow."""
+    path = _flow_path(get_store(ctx), flow)
+    existed = path.exists()
+    _clear_flow_path(path)
+    data = {"flow": str(path), "cancelled": existed}
+    if json_:
+        emit_json(data)
+    else:
+        typer.echo(f"Cancelled login flow: {path}" if existed else f"No login flow found: {path}")
 
 
 @app.command("config")

@@ -39,6 +39,10 @@ class ConfigStore:
     def login_state_path(self) -> Path:
         return _xdg_state_home() / APP_NAME / "login_state.json"
 
+    @property
+    def login_flow_path(self) -> Path:
+        return _xdg_state_home() / APP_NAME / "login_flow.json"
+
     def load(self) -> Config:
         if not self.path.exists():
             return Config()
@@ -56,3 +60,5 @@ class ConfigStore:
     def clear_login_state(self) -> None:
         if self.login_state_path.exists():
             self.login_state_path.unlink()
+        if self.login_flow_path.exists():
+            self.login_flow_path.unlink()

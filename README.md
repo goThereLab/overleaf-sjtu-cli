@@ -49,8 +49,18 @@ source ~/.bash_completion.d/overleaf
 登录：
 
 ```bash
+overleaf auth status
 overleaf auth login
 overleaf auth whoami
+```
+
+Agent 或无 TTY 环境使用显式登录流程：
+
+```bash
+overleaf auth flow start --flow /tmp/overleaf-login.json --captcha-output /tmp/captcha.png
+overleaf auth flow submit-password --flow /tmp/overleaf-login.json --username USER --password PASS --captcha CODE
+overleaf auth flow mfa-request --flow /tmp/overleaf-login.json --method email
+overleaf auth flow mfa-submit --flow /tmp/overleaf-login.json --code CODE
 ```
 
 列出并选择项目：

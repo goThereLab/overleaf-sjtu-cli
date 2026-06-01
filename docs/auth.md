@@ -5,28 +5,79 @@
 ## 基础登录
 
 ```bash
+overleaf auth status
 overleaf auth login
 overleaf auth whoami
 ```
 
-如果 jAccount 要求验证码，交互式终端会直接显示验证码图像。非交互环境可以先保存验证码图片，再带验证码继续：
+`auth login` 是面向人的交互式入口。如果 jAccount 要求验证码，交互式终端会直接显示验证码图像。
+
+`auth status` 用来显式查看 session 和 pending flow：
 
 ```bash
-overleaf auth login --captcha-output jaccount-captcha.png </dev/null
-overleaf auth login --username USERNAME --password PASSWORD --captcha CAPTCHA --no-remember
+overleaf auth status
+overleaf auth status --check
+overleaf auth status --json
 ```
 
-## 二次认证
+## Agent/无 TTY 登录
+
+Agent 和脚本应优先使用显式 flow 命令，而不是反复给 `auth login` 传不同阶段的参数。flow 文件中保存 jAccount 临时上下文和临时 cookie，不保存密码，文件权限为 `0600`。
+
+第一步，启动登录并保存验证码：
+
+```bash
+overleaf auth flow start \
+  --flow /tmp/overleaf-login.json \
+  --captcha-output /tmp/jaccount-captcha.png
+```
+
+读取验证码图片后提交账号密码：
+
+```bash
+overleaf auth flow submit-password \
+  --flow /tmp/overleaf-login.json \
+  --username USERNAME \
+  --password PASSWORD \
+  --captcha CAPTCHA
+```
+
+如果返回 `mfa_required`，先请求一种二次认证方式：
+
+```bash
+overleaf auth flow mfa-request \
+  --flow /tmp/overleaf-login.json \
+  --method email
+```
+
+收到验证码后提交：
+
+```bash
+overleaf auth flow mfa-submit \
+  --flow /tmp/overleaf-login.json \
+  --code CODE
+```
+
+每一步都支持 `--json`，输出中会包含 `flow`、`state` 和 `next` 字段，便于 Agent 按状态机推进。
+
+查看或取消当前 flow：
+
+```bash
+overleaf auth flow status --flow /tmp/overleaf-login.json
+overleaf auth flow cancel --flow /tmp/overleaf-login.json
+```
+
+## 二次认证方式
 
 jAccount 可能要求额外认证。当前支持三种方式：
 
 ```bash
-overleaf auth login --mfa-method app
-overleaf auth login --mfa-method email
-overleaf auth login --mfa-method sms
+overleaf auth flow mfa-request --method app
+overleaf auth flow mfa-request --method email
+overleaf auth flow mfa-request --method sms
 ```
 
-分步流程：
+旧的 `auth login` 分阶段参数仍兼容：
 
 ```bash
 overleaf auth login --mfa-method email --no-remember

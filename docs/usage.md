@@ -4,9 +4,17 @@
 
 ```bash
 overleaf auth whoami
+overleaf auth status [--check] [--json]
 overleaf auth login
 overleaf auth pending
 overleaf auth logout
+overleaf auth flow start [--flow FLOW.json] [--captcha-output captcha.png] [--json]
+overleaf auth flow status [--flow FLOW.json] [--json]
+overleaf auth flow submit-password --flow FLOW.json --username USER --password PASS [--captcha CODE] [--json]
+overleaf auth flow mfa-request --flow FLOW.json --method [app|email|sms] [--json]
+overleaf auth flow mfa-submit --flow FLOW.json --code CODE [--json]
+overleaf auth flow resend --flow FLOW.json [--json]
+overleaf auth flow cancel [--flow FLOW.json]
 overleaf config
 
 overleaf project list [--limit 50] [--json] [--quiet]
@@ -41,6 +49,18 @@ overleaf compile log [PROJECT] [--tail 80] [--full] [-o output.log]
 
 ```text
 ~/.local/state/overleaf-sjtu/cookies.json
+```
+
+默认登录 flow：
+
+```text
+~/.local/state/overleaf-sjtu/login_flow.json
+```
+
+兼容旧登录流程的 pending state：
+
+```text
+~/.local/state/overleaf-sjtu/login_state.json
 ```
 
 Cookie 文件会以 `0600` 权限写入。

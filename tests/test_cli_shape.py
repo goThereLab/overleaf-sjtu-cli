@@ -1,3 +1,5 @@
+import json
+
 import requests
 import pytest
 from typer.testing import CliRunner
@@ -33,6 +35,126 @@ def test_login_help_exposes_jaccount_mfa_controls() -> None:
     assert "--mfa-code TEXT" in result.output
     assert "--mfa-resend" in result.output
     assert "--trust-mfa / --no-trust-mfa" in result.output
+
+
+def test_auth_flow_start_saves_explicit_flow(monkeypatch, tmp_path) -> None:
+    class FakeClient:
+        def __init__(self, config, store, timeout=60):
+            self.session = requests.Session()
+
+        def begin_jaccount_login(self):
+            return {
+                "login_url": "https://jaccount.sjtu.edu.cn/jaccount/jalogin",
+                "post_url": "https://jaccount.sjtu.edu.cn/jaccount/ulogin",
+                "captcha_url": "https://jaccount.sjtu.edu.cn/jaccount/captcha",
+                "requires_captcha": True,
+                "context": {"uuid": "abc"},
+            }
+
+        def get_login_captcha(self, login_state):
+            return b"png"
+
+    monkeypatch.setattr("overleaf_sjtu.cli.OverleafClient", FakeClient)
+    flow = tmp_path / "login-flow.json"
+    captcha = tmp_path / "captcha.png"
+
+    result = runner.invoke(
+        app,
+        ["auth", "flow", "start", "--flow", str(flow), "--captcha-output", str(captcha), "--json"],
+        env={"XDG_CONFIG_HOME": str(tmp_path / "config"), "XDG_STATE_HOME": str(tmp_path / "state")},
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["flow"] == str(flow)
+    assert data["state"] == "captcha_required"
+    assert data["captcha_path"] == str(captcha)
+    assert captcha.read_bytes() == b"png"
+    assert flow.exists()
+    assert flow.stat().st_mode & 0o777 == 0o600
+
+
+def test_auth_flow_password_mfa_and_submit(monkeypatch, tmp_path) -> None:
+    class FakeClient:
+        def __init__(self, config, store, timeout=60):
+            self.session = requests.Session()
+            self.session.cookies.set("JAAuthCookie", "ok", domain="jaccount.sjtu.edu.cn", path="/")
+
+        def login_with_jaccount(self, **kwargs):
+            assert kwargs["username"] == "hammer"
+            assert kwargs["password"] == "secret"
+            assert kwargs["captcha"] == "ianck"
+            response = requests.Response()
+            response.status_code = 200
+            response.url = "https://jaccount.sjtu.edu.cn/jaccount/jalogin"
+            response._content = (
+                b"<script>account: 'hammer'</script>"
+                b'<form><input name="shouldauth" value="true">'
+                b'<input name="c" value="email"><input name="c" value="sms"><input name="captcha"></form>'
+            )
+            challenge = JAccountVerificationChallenge(url=response.url, account="hammer", methods=["email", "sms"])
+            raise JAccountVerificationRequired(challenge, response)
+
+        def request_jaccount_verification(self, response, method):
+            assert method == "email"
+            return JAccountVerificationResult(success=True, message="sent to email", retry_seconds=60)
+
+        def complete_jaccount_verification(self, response, method, code, trust=True, request_code=False, account=None):
+            assert method == "email"
+            assert code == "123456"
+            assert account == "hammer"
+            return {"project_count_visible": 2}
+
+    monkeypatch.setattr("overleaf_sjtu.cli.OverleafClient", FakeClient)
+    flow = tmp_path / "login-flow.json"
+    flow.write_text(
+        json.dumps(
+            {
+                "created_at": 4102444800,
+                "captcha_path": str(tmp_path / "captcha.png"),
+                "login_state": {"requires_captcha": True, "context": {"uuid": "abc"}},
+            }
+        )
+    )
+    flow.chmod(0o600)
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "config"), "XDG_STATE_HOME": str(tmp_path / "state")}
+
+    password = runner.invoke(
+        app,
+        [
+            "auth",
+            "flow",
+            "submit-password",
+            "--flow",
+            str(flow),
+            "--username",
+            "hammer",
+            "--password",
+            "secret",
+            "--captcha",
+            "ianck",
+            "--json",
+        ],
+        env=env,
+    )
+    assert password.exit_code == 0
+    password_data = json.loads(password.output)
+    assert password_data["state"] == "mfa_required"
+    assert password_data["methods"] == ["email", "sms"]
+    assert "secret" not in flow.read_text()
+
+    request = runner.invoke(app, ["auth", "flow", "mfa-request", "--flow", str(flow), "--method", "email", "--json"], env=env)
+    assert request.exit_code == 0
+    request_data = json.loads(request.output)
+    assert request_data["state"] == "mfa_code_requested"
+    assert request_data["retry_seconds"] == 60
+
+    submit = runner.invoke(app, ["auth", "flow", "mfa-submit", "--flow", str(flow), "--code", "123456", "--json"], env=env)
+    assert submit.exit_code == 0
+    submit_data = json.loads(submit.output)
+    assert submit_data["state"] == "authenticated"
+    assert submit_data["project_count_visible"] == 2
+    assert not flow.exists()
 
 
 def test_compile_run_help_explains_compiler_choice() -> None:
