@@ -77,18 +77,10 @@ overleaf auth flow mfa-request --method email
 overleaf auth flow mfa-request --method sms
 ```
 
-旧的 `auth login` 分阶段参数仍兼容：
-
-```bash
-overleaf auth login --mfa-method email --no-remember
-overleaf auth pending
-overleaf auth login --mfa-code CODE --no-remember
-```
-
 如果验证码没到或过期：
 
 ```bash
-overleaf auth login --mfa-resend
+overleaf auth flow resend --flow /tmp/overleaf-login.json
 ```
 
 `app` 会发送到 My SJTU/交我办，`email` 会发送到 jAccount 邮箱目标，`sms` 会发送到 jAccount 显示的手机号。短时间内重复触发同一种方式可能被 jAccount 拒绝。

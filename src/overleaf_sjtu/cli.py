@@ -162,14 +162,6 @@ def login(
     ctx: typer.Context,
     username: Optional[str] = typer.Option(None, "--username", "-u", envvar="OVERLEAF_USERNAME", help="jAccount username."),
     password: Optional[str] = typer.Option(None, "--password", envvar="OVERLEAF_PASSWORD", help="jAccount password."),
-    captcha: Optional[str] = typer.Option(None, "--captcha", help="jAccount captcha code."),
-    captcha_output: Optional[Path] = typer.Option(
-        None, "--captcha-output", help="Save captcha image to this path. Without a TTY, defaults to a system temp file."
-    ),
-    mfa_method: Optional[MfaMethod] = typer.Option(None, "--mfa-method", help="Start jAccount verification with app, email, or sms."),
-    mfa_code: Optional[str] = typer.Option(None, "--mfa-code", help="Submit a code for a pending jAccount verification."),
-    mfa_resend: bool = typer.Option(False, "--mfa-resend", help="Resend the code for a pending jAccount verification."),
-    trust_mfa: bool = typer.Option(True, "--trust-mfa/--no-trust-mfa", help="Trust this device when submitting additional verification."),
     cookie: Optional[str] = typer.Option(None, "--cookie", help="Import a raw Cookie header."),
     remember: Optional[bool] = typer.Option(
         None,
@@ -189,98 +181,15 @@ def login(
         client.session.cookies.update(jar)
     else:
         has_tty = sys.stdin.isatty() and sys.stdout.isatty()
-        mfa_method = mfa_method.value if mfa_method else None
-        if mfa_resend and mfa_code:
-            raise typer.BadParameter("--mfa-resend cannot be used with --mfa-code", param_hint="--mfa-resend")
-        pending_mfa = _load_pending_mfa_state(store) if mfa_code or mfa_resend else None
-        if pending_mfa is None and mfa_method and not (username or password or captcha):
-            candidate_mfa = _load_pending_mfa_state(store)
-            if candidate_mfa is not None:
-                pending_mfa = candidate_mfa
-        if pending_mfa is not None:
-            pending_method = pending_mfa.get("method")
-            _restore_cookie_list(client, pending_mfa.get("cookies") or [])
-            response = _response_from_pending_mfa(pending_mfa)
-            if not pending_method:
-                methods = pending_mfa.get("methods") or []
-                if mfa_code:
-                    raise AuthRequired(f"pending jAccount verification has no selected method; rerun with --mfa-method one of: {', '.join(methods)}")
-                if not mfa_method:
-                    raise AuthRequired(f"pending jAccount verification has no selected method; rerun with --mfa-method one of: {', '.join(methods)}")
-                if mfa_method not in methods:
-                    raise AuthRequired(f"jAccount verification method {mfa_method} is not available; choose one of: {', '.join(methods)}")
-                sent = client.request_jaccount_verification(response, mfa_method)
-                typer.echo(sent.message)
-                if sent.retry_seconds:
-                    typer.echo(f"Resend available in {sent.retry_seconds} seconds")
-                if not sent.success:
-                    raise AuthRequired(sent.message)
-                selected_mfa = dict(pending_mfa)
-                selected_mfa["method"] = mfa_method
-                _refresh_pending_mfa_state(store, selected_mfa, client)
-                typer.echo("Next:")
-                typer.echo(f"  overleaf auth login --mfa-code CODE --no-remember")
-                return
-            if mfa_method and mfa_method != pending_method:
-                raise AuthRequired(f"pending jAccount verification uses {pending_method}; rerun with --mfa-method {pending_method}")
-            if mfa_method and not (mfa_code or mfa_resend):
-                raise AuthRequired(
-                    "pending jAccount verification is waiting for a code; "
-                    "rerun with --mfa-code CODE or --mfa-resend"
-                )
-            mfa_method = pending_method
-            if mfa_resend:
-                sent = client.request_jaccount_verification(response, mfa_method)
-                typer.echo(sent.message)
-                if sent.retry_seconds:
-                    typer.echo(f"Resend available in {sent.retry_seconds} seconds")
-                if not sent.success:
-                    raise AuthRequired(sent.message)
-                _refresh_pending_mfa_state(store, pending_mfa, client)
-                typer.echo("Next:")
-                typer.echo(f"  overleaf auth login --mfa-code CODE --no-remember")
-                return
-            info = client.complete_jaccount_verification(
-                response,
-                mfa_method,
-                mfa_code,
-                trust=trust_mfa,
-                request_code=False,
-                account=pending_mfa.get("account"),
-            )
-            store.clear_login_state()
-            if save_base_url:
-                store.save(config)
-            console.print(f"Logged in: {info['project_count_visible']} visible projects")
-            return
-        if mfa_code or mfa_resend:
+        if not has_tty:
             raise AuthRequired(
-                "pending jAccount additional verification state not found or expired; "
-                "rerun `overleaf auth login --mfa-method app|email|sms`"
+                "non-interactive login requires explicit flow commands; "
+                "run `overleaf auth flow start --captcha-output captcha.png`"
             )
-        pending_login = _load_pending_login_payload(store) if captcha else None
-        login_state = (pending_login or {}).get("login_state") if captcha else None
-        if captcha and login_state is None:
-            raise OverleafError("captcha login state not found; run `overleaf auth login --captcha-output jaccount-captcha.png` first")
-        if captcha and not mfa_method and pending_login:
-            mfa_method = pending_login.get("mfa_method")
-        if login_state is None:
-            login_state = client.begin_jaccount_login()
-        if login_state["requires_captcha"] and not captcha:
+        login_state = client.begin_jaccount_login()
+        captcha = None
+        if login_state["requires_captcha"]:
             captcha_bytes = client.get_login_captcha(login_state)
-            saved_captcha = _save_captcha_if_needed(captcha_bytes, captcha_output, has_tty=has_tty)
-            if saved_captcha:
-                typer.echo(f"Captcha saved: {saved_captcha}")
-            if not has_tty:
-                _save_pending_login_state(store, login_state, saved_captcha, mfa_method=mfa_method)
-                typer.echo("Next:")
-                typer.echo("  read the captcha image")
-                next_cmd = "overleaf auth login --username USERNAME --password PASSWORD --captcha CAPTCHA"
-                if mfa_method:
-                    next_cmd += f" --mfa-method {mfa_method}"
-                next_cmd += " --no-remember"
-                typer.echo(f"  {next_cmd}")
-                return
             try:
                 _, _, rows = captcha_to_ansi_blocks(captcha_bytes)
                 for row in rows:
@@ -301,38 +210,17 @@ def login(
                 password = getpass.getpass("Password: ")
                 entered_password = True
         try:
-            login_kwargs = {"username": username, "password": password, "captcha": captcha, "login_state": login_state}
-            if mfa_method or mfa_code or not trust_mfa:
-                login_kwargs.update(mfa_method=mfa_method, mfa_code=mfa_code, trust_mfa=trust_mfa)
-            info = client.login_with_jaccount(**login_kwargs)
+            info = client.login_with_jaccount(username=username, password=password, captcha=captcha, login_state=login_state)
         except JAccountVerificationRequired as exc:
-            if not mfa_method:
-                if not has_tty:
-                    methods = ", ".join(exc.challenge.methods)
-                    _save_pending_mfa_state(store, exc.response, exc.challenge, None, client)
-                    typer.echo("jAccount additional verification required")
-                    typer.echo("Next:")
-                    typer.echo(f"  choose METHOD from: {methods}")
-                    typer.echo("  overleaf auth login --mfa-method METHOD --no-remember")
-                    return
-                mfa_method = _prompt_mfa_method(exc.challenge.methods)
-            elif mfa_method not in exc.challenge.methods:
-                methods = ", ".join(exc.challenge.methods)
-                raise AuthRequired(f"jAccount verification method {mfa_method} is not available; choose one of: {methods}") from exc
+            mfa_method = _prompt_mfa_method(exc.challenge.methods)
             sent = client.request_jaccount_verification(exc.response, mfa_method)
             typer.echo(sent.message)
             if sent.retry_seconds:
                 typer.echo(f"Resend available in {sent.retry_seconds} seconds")
             if not sent.success:
                 raise AuthRequired(sent.message) from exc
-            if not mfa_code:
-                _save_pending_mfa_state(store, exc.response, exc.challenge, mfa_method, client)
-                if not has_tty:
-                    typer.echo("Next:")
-                    typer.echo(f"  overleaf auth login --mfa-method {mfa_method} --mfa-code CODE --no-remember")
-                    return
-                mfa_code = typer.prompt("Verification code")
-            info = client.complete_jaccount_verification(exc.response, mfa_method, mfa_code, trust=trust_mfa, request_code=False)
+            mfa_code = typer.prompt("Verification code")
+            info = client.complete_jaccount_verification(exc.response, mfa_method, mfa_code, request_code=False)
         store.clear_login_state()
         should_save = remember
         if should_save is None:
@@ -698,45 +586,6 @@ def auth_status(
     if not data["session_present"] or data.get("session_valid") is False:
         console.print("  overleaf auth login")
 
-
-@auth_app.command("pending")
-def auth_pending(ctx: typer.Context, json_: bool = typer.Option(False, "--json", help="Emit JSON.")) -> None:
-    """Show pending jAccount CAPTCHA or additional verification state."""
-    status = _pending_status(get_store(ctx))
-    if json_:
-        emit_json(status)
-        return
-    if not status.get("pending"):
-        typer.echo("No pending jAccount login state")
-        return
-    if status.get("type") == "mfa":
-        methods = ", ".join(status.get("methods") or [])
-        method = status.get("method")
-        typer.echo(f"Pending jAccount additional verification: method={method or 'not selected'}")
-        if methods:
-            typer.echo(f"available methods: {methods}")
-        if status.get("account"):
-            typer.echo(f"account: {status['account']}")
-        typer.echo(f"expires in: {status['remaining_seconds']} seconds")
-        typer.echo("Next:")
-        if method:
-            typer.echo("  overleaf auth login --mfa-code CODE --no-remember")
-            typer.echo("  overleaf auth login --mfa-resend")
-        else:
-            typer.echo("  overleaf auth login --mfa-method METHOD --no-remember")
-        return
-    if status.get("type") == "captcha":
-        typer.echo("Pending jAccount CAPTCHA")
-        if status.get("captcha_path"):
-            typer.echo(f"captcha: {status['captcha_path']}")
-        typer.echo(f"expires in: {status['remaining_seconds']} seconds")
-        typer.echo("Next:")
-        next_cmd = "overleaf auth login --username USERNAME --password PASSWORD --captcha CAPTCHA"
-        if status.get("mfa_method"):
-            next_cmd += f" --mfa-method {status['mfa_method']}"
-        next_cmd += " --no-remember"
-        typer.echo(f"  {next_cmd}")
-        return
 
 
 @auth_flow_app.command("status")

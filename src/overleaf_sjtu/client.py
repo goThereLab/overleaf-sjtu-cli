@@ -297,7 +297,7 @@ class OverleafClient:
         if self._jaccount_verification_challenge(callback):
             raise AuthRequired(
                 "jAccount additional verification did not complete; "
-                "check the code or app approval, then retry `overleaf auth login --mfa-code CODE`"
+                "check the code or app approval, then retry `overleaf auth flow mfa-submit --code CODE`"
             )
         self.save_cookies()
         return self.whoami()

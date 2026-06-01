@@ -6,7 +6,6 @@
 overleaf auth whoami
 overleaf auth status [--check] [--json]
 overleaf auth login
-overleaf auth pending
 overleaf auth logout
 overleaf auth flow start [--flow FLOW.json] [--captcha-output captcha.png] [--json]
 overleaf auth flow status [--flow FLOW.json] [--json]
