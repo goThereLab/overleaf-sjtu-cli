@@ -18,7 +18,7 @@ def test_auth_commands_are_grouped() -> None:
 
     assert root.exit_code == 0
     assert "auth" in root.output
-    assert "completion" not in root.output
+    assert "completion" in root.output
     assert "login" not in [line.split()[0] for line in root.output.splitlines() if line.strip()]
     assert auth.exit_code == 0
     assert "login" in auth.output
@@ -353,6 +353,7 @@ def test_completion_commands_generate_zsh_script(tmp_path) -> None:
     assert show.exit_code == 0
     assert show.output.startswith("#compdef overleaf\n")
     assert "#compdef overleaf" in show.output
+    assert "autoload -Uz compinit" in show.output
     assert "_overleaf()" in show.output
     assert "_OVERLEAF_COMPLETE=complete_zsh overleaf" in show.output
 
@@ -364,6 +365,7 @@ def test_completion_commands_generate_zsh_script(tmp_path) -> None:
     assert installed.exists()
     installed_text = installed.read_text()
     assert installed_text.startswith("#compdef overleaf\n")
+    assert "autoload -Uz compinit" in installed_text
     assert "_overleaf()" in installed_text
 
 
@@ -394,7 +396,7 @@ def test_completion_install_defaults_to_current_shell(tmp_path, monkeypatch) -> 
     assert ".bashrc" in install.output
 
 
-def test_completion_command_is_hidden_from_shell_candidates() -> None:
+def test_completion_command_is_visible_in_shell_candidates() -> None:
     result = runner.invoke(
         app,
         env={
@@ -405,6 +407,21 @@ def test_completion_command_is_hidden_from_shell_candidates() -> None:
     )
 
     assert result.exit_code == 0
-    assert "completion" not in result.output
-    for command in ("config", "auth", "project", "compile", "settings", "file"):
+    for command in ("config", "auth", "project", "compile", "settings", "file", "completion"):
+        assert command in result.output
+
+
+def test_legacy_completion_instruction_still_works() -> None:
+    result = runner.invoke(
+        app,
+        env={
+            "_OVERLEAF_COMPLETE": "zsh_complete",
+            "COMP_WORDS": "overleaf ",
+            "COMP_CWORD": "1",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert "Shell complete not supported" not in result.output
+    for command in ("config", "auth", "project", "compile", "settings", "file", "completion"):
         assert command in result.output

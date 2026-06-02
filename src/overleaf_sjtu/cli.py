@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import getpass
 import atexit
+import contextlib
 import hashlib
+import io
 import json
 import os
 import posixpath
@@ -56,12 +58,7 @@ class Compiler(str, Enum):
 
 class CompactHelpGroup(TyperGroup):
     def _hide_compat_commands(self) -> None:
-        # Typer versions differ in whether add_typer(..., hidden=True) is
-        # propagated to the generated Click command. Keep the public completion
-        # installer callable, but hide it from help and shell candidates.
-        command = self.commands.get("completion")
-        if command is not None:
-            command.hidden = True
+        return None
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         self._hide_compat_commands()
@@ -69,20 +66,11 @@ class CompactHelpGroup(TyperGroup):
 
     def get_help(self, ctx: click.Context) -> str:
         self._hide_compat_commands()
-        help_text = super().get_help(ctx)
-        return "\n".join(
-            line
-            for line in help_text.splitlines()
-            if not line.strip().startswith("completion  ")
-        )
+        return super().get_help(ctx)
 
     def shell_complete(self, ctx: click.Context, incomplete: str) -> list[click.shell_completion.CompletionItem]:
         self._hide_compat_commands()
-        return [
-            item
-            for item in super().shell_complete(ctx, incomplete)
-            if item.value != "completion"
-        ]
+        return super().shell_complete(ctx, incomplete)
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         if not args and self.no_args_is_help and not ctx.resilient_parsing:
@@ -120,7 +108,7 @@ auth_app.add_typer(auth_flow_app, name="flow")
 app.add_typer(project_app, name="project")
 app.add_typer(compile_app, name="compile")
 app.add_typer(settings_app, name="settings")
-app.add_typer(completion_app, name="completion", hidden=True)
+app.add_typer(completion_app, name="completion")
 app.add_typer(file_app, name="file")
 
 
@@ -850,15 +838,25 @@ def _zsh_completion_script() -> str:
         "_OVERLEAF_COMPLETE=zsh_complete",
         "_OVERLEAF_COMPLETE=complete_zsh",
     ).lstrip()
-    return script.replace("_overleaf_completion()", "_overleaf()", 1).replace(
+    script = script.replace("_overleaf_completion()", "_overleaf()", 1).replace(
         "compdef _overleaf_completion overleaf",
         "compdef _overleaf overleaf",
+    )
+    return script.replace(
+        "#compdef overleaf\n\n",
+        "#compdef overleaf\n\n"
+        "autoload -Uz compinit\n"
+        "if ! whence compdef >/dev/null 2>&1; then\n"
+        "  compinit\n"
+        "fi\n\n",
+        1,
     )
 
 
 def _bash_completion_script() -> str:
     root_command = typer.main.get_command(app)
-    return BashComplete(root_command, {}, "overleaf", "_OVERLEAF_COMPLETE").source()
+    with contextlib.redirect_stderr(io.StringIO()):
+        return BashComplete(root_command, {}, "overleaf", "_OVERLEAF_COMPLETE").source()
 
 
 def _default_completion_shell() -> str:
@@ -1678,6 +1676,7 @@ def settings_compiler(
 
 def run() -> None:
     try:
+        _normalize_completion_env()
         app()
     except AuthRequired as exc:
         error(str(exc))
@@ -1685,6 +1684,16 @@ def run() -> None:
     except OverleafError as exc:
         error(str(exc))
         sys.exit(1)
+
+
+def _normalize_completion_env() -> None:
+    instruction = os.environ.get("_OVERLEAF_COMPLETE")
+    legacy = {
+        "bash_complete": "complete_bash",
+        "zsh_complete": "complete_zsh",
+    }
+    if instruction in legacy:
+        os.environ["_OVERLEAF_COMPLETE"] = legacy[instruction]
 
 
 if __name__ == "__main__":
