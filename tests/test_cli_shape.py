@@ -5,7 +5,7 @@ import pytest
 from typer.testing import CliRunner
 
 from overleaf_sjtu.client import AuthRequired, JAccountVerificationChallenge, JAccountVerificationRequired, JAccountVerificationResult
-from overleaf_sjtu.cli import _save_captcha_if_needed, app
+from overleaf_sjtu.cli import _display_login_captcha, _save_captcha_if_needed, app
 from overleaf_sjtu.models import CompileResult
 
 
@@ -321,6 +321,47 @@ def test_captcha_uses_temp_file_without_tty() -> None:
     assert saved.suffix == ".png"
     assert saved.read_bytes() == b"png"
     saved.unlink()
+
+
+def test_display_login_captcha_saves_png_on_windows(monkeypatch, tmp_path, capsys) -> None:
+    saved = tmp_path / "captcha.png"
+
+    def fake_save(captcha_bytes, output, has_tty):
+        assert captcha_bytes == b"png"
+        assert output is None
+        assert has_tty is False
+        return saved
+
+    def fake_render(captcha_bytes, *, windows=None):
+        assert captcha_bytes == b"png"
+        assert windows is True
+        return (4, 2), (4, 2), [" ## ", "####"]
+
+    monkeypatch.setattr("overleaf_sjtu.cli._save_captcha_if_needed", fake_save)
+    monkeypatch.setattr("overleaf_sjtu.cli.captcha_to_ansi_blocks", fake_render)
+
+    _display_login_captcha(b"png", windows=True)
+
+    output = capsys.readouterr().out
+    assert f"Captcha saved: {saved}" in output
+    assert " ## " in output
+
+
+def test_display_login_captcha_keeps_posix_inline_only(monkeypatch, capsys) -> None:
+    def fake_save(captcha_bytes, output, has_tty):
+        raise AssertionError("POSIX inline rendering should not save a captcha file")
+
+    def fake_render(captcha_bytes, *, windows=None):
+        assert captcha_bytes == b"png"
+        assert windows is False
+        return (4, 2), (4, 2), ["\x1b[38;2;0;0;0m▀\x1b[0m"]
+
+    monkeypatch.setattr("overleaf_sjtu.cli._save_captcha_if_needed", fake_save)
+    monkeypatch.setattr("overleaf_sjtu.cli.captcha_to_ansi_blocks", fake_render)
+
+    _display_login_captcha(b"png", windows=False)
+
+    assert "\x1b[38;2;0;0;0m▀\x1b[0m" in capsys.readouterr().out
 
 
 def test_root_file_shortcuts_are_removed() -> None:

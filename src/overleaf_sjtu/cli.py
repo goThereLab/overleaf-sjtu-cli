@@ -178,12 +178,7 @@ def login(
         captcha = None
         if login_state["requires_captcha"]:
             captcha_bytes = client.get_login_captcha(login_state)
-            try:
-                _, _, rows = captcha_to_ansi_blocks(captcha_bytes)
-                for row in rows:
-                    typer.echo(row, color=True)
-            except Exception as exc:
-                error(f"Warning: could not render captcha in terminal: {exc}")
+            _display_login_captcha(captcha_bytes)
             captcha = typer.prompt("Captcha")
         saved_username, saved_password = get_saved_credentials()
         used_saved_password = False
@@ -238,6 +233,20 @@ def _save_captcha_if_needed(captcha_bytes: bytes, output: Optional[Path], has_tt
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(captcha_bytes)
     return path
+
+
+def _display_login_captcha(captcha_bytes: bytes, *, windows: bool | None = None) -> None:
+    use_windows_fallback = os.name == "nt" if windows is None else windows
+    if use_windows_fallback:
+        saved_captcha = _save_captcha_if_needed(captcha_bytes, None, has_tty=False)
+        if saved_captcha:
+            typer.echo(f"Captcha saved: {saved_captcha}")
+    try:
+        _, _, rows = captcha_to_ansi_blocks(captcha_bytes, windows=use_windows_fallback)
+        for row in rows:
+            typer.echo(row, color=not use_windows_fallback)
+    except Exception as exc:
+        error(f"Warning: could not render captcha in terminal: {exc}")
 
 
 def _save_pending_login_state(

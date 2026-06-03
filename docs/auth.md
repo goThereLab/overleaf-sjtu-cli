@@ -11,6 +11,7 @@ overleaf auth whoami
 ```
 
 `auth login` 是面向人的交互式入口。如果 jAccount 要求验证码，交互式终端会直接显示验证码图像。
+在 Windows 终端中，CLI 会使用 ASCII 高对比渲染代替 truecolor 色块，并额外保存一份验证码 PNG 路径，避免旧版 PowerShell/ConHost 对 ANSI 24 位颜色或半块字符支持不完整导致验证码不可读。
 
 `auth status` 用来显式查看 session 和 pending flow：
 
